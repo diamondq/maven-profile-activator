@@ -337,10 +337,7 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
             javaVer = Integer.parseInt(testFile.substring(10));
         }
         if (javaVer == -1) {
-          pProblems.add(new ModelProblemCollectorRequest(Severity.ERROR, Version.BASE)
-            .setMessage(
-              "No profiles/type-java-XXX present when requesting a jdk script within profile " + pProfile.getId())
-            .setLocation(pPropertyLocation));
+          logger.debug("[DIAMONDQ Profile Activator] No profiles/type-java-XXX present when requesting a jdk so false");
           return false;
         }
         if (args.startsWith("<=") || args.startsWith("=<")) {
