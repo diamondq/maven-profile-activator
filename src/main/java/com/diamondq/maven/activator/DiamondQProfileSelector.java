@@ -30,11 +30,13 @@ import org.codehaus.plexus.interpolation.MapBasedValueSource;
 import org.codehaus.plexus.interpolation.RegexBasedInterpolator;
 import org.codehaus.plexus.logging.Logger;
 import org.codehaus.plexus.util.StringUtils;
+import org.eclipse.sisu.Priority;
 
 /**
  * Profile selector which combines profiles activated by custom and default activators. Overrides "default" provider.
  */
-@Component(role = ProfileSelector.class, hint = "default")
+@Component(role = ProfileSelector.class, hint = "extra")
+@Priority(999)
 public class DiamondQProfileSelector extends DefaultProfileSelector {
 
   @Requirement
@@ -45,6 +47,9 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
 
   @Requirement
   private PathTranslator           pathTranslator;
+
+  public DiamondQProfileSelector() {
+  }
 
   /**
    * Profiles activated by both custom and default activators.

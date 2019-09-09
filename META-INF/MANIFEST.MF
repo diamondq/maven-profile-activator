@@ -1,0 +1,14 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: DiamondQ Maven Profile Activator
+Bundle-SymbolicName: com.diamondq.maven.activator;singleton:=true
+Bundle-Version: 1.0.0.qualifier
+Bundle-Vendor: DiamondQ
+Bundle-RequiredExecutionEnvironment: JavaSE-1.8
+Import-Package: org.apache.maven.model;provider=m2e,
+ org.codehaus.plexus.component.annotations;provider=m2e,
+ org.codehaus.plexus.interpolation;provider=m2e;version="1.25.0",
+ org.codehaus.plexus.logging;provider=m2e,
+ org.codehaus.plexus.util;provider=m2e,
+ org.osgi.framework
+Fragment-Host: org.eclipse.m2e.maven.runtime
