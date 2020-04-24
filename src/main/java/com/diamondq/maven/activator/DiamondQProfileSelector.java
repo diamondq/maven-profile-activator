@@ -1,13 +1,18 @@
 package com.diamondq.maven.activator;
 
 import java.io.File;
+import java.lang.ref.WeakReference;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.maven.model.Activation;
 import org.apache.maven.model.ActivationProperty;
@@ -29,7 +34,6 @@ import org.codehaus.plexus.interpolation.AbstractValueSource;
 import org.codehaus.plexus.interpolation.MapBasedValueSource;
 import org.codehaus.plexus.interpolation.RegexBasedInterpolator;
 import org.codehaus.plexus.logging.Logger;
-import org.codehaus.plexus.util.StringUtils;
 import org.eclipse.sisu.Priority;
 
 /**
@@ -40,15 +44,42 @@ import org.eclipse.sisu.Priority;
 public class DiamondQProfileSelector extends DefaultProfileSelector {
 
   @Requirement
-  protected Logger                 logger;
+  protected Logger                                logger;
 
   @Requirement(role = ProfileActivator.class)
-  protected List<ProfileActivator> activatorList = new ArrayList<>();
+  protected List<ProfileActivator>                activatorList = new ArrayList<>();
 
   @Requirement
-  private PathTranslator           pathTranslator;
+  private PathTranslator                          pathTranslator;
+
+  /**
+   * This holds a set of dependencies that need to be checked whenever the profile activation context changes. If the
+   * dependencies 'fail', then the cachedActiveProfiles is no longer valid
+   */
+  private final List<Dependency>                  dependencies;
+
+  /**
+   * A pointer to the last context
+   */
+  private WeakReference<ProfileActivationContext> lastProfileActiveContext;
+
+  /**
+   * The set of profiles that are known to be active
+   */
+  private final Set<String>                       cachedActiveProfiles;
+
+  /**
+   * The set of profiles that are known to be inactive
+   */
+  private final Set<String>                       cachedInactiveProfiles;
+
+  private final AtomicBoolean                     debugReport   = new AtomicBoolean(false);
 
   public DiamondQProfileSelector() {
+    dependencies = new ArrayList<>();
+    lastProfileActiveContext = new WeakReference<ProfileActivationContext>(null);
+    cachedActiveProfiles = new HashSet<>();
+    cachedInactiveProfiles = new HashSet<>();
   }
 
   /**
@@ -57,60 +88,143 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
   @Override
   public List<Profile> getActiveProfiles(Collection<Profile> profiles, ProfileActivationContext context,
     ModelProblemCollector problems) {
-    /*
-     * In order to allow the existing profile detection to figure out if this extension is present, we'll inject a
-     * custom property
-     */
 
-    ProfileActivationContext updatedContext = new ProfileActivationContext() {
+    synchronized (this) {
 
-      @Override
-      public Map<String, String> getUserProperties() {
-        return context.getUserProperties();
+      /* Get a debug flag from the system properties */
+
+      boolean selectorDebug =
+        Boolean.parseBoolean(context.getSystemProperties().getOrDefault("DiamondQProfileSelectorDebug", "false"));
+
+      if (debugReport.compareAndSet(false, true) == true)
+        logger.debug(
+          "[DIAMONDQ Profile Activator] Use the -DDiamondQProfileSelectorDebug=true flag to get very detailed tracing information");
+
+      /*
+       * In order to allow the existing profile detection to figure out if this extension is present, we'll inject a
+       * custom property
+       */
+
+      ProfileActivationContext updatedContext = new ProfileActivationContext() {
+
+        @Override
+        public Map<String, String> getUserProperties() {
+          return context.getUserProperties();
+        }
+
+        @Override
+        public Map<String, String> getSystemProperties() {
+          Map<String, String> systemProperties = new HashMap<>(context.getSystemProperties());
+          systemProperties.put("[DIAMONDQ-PROFILE-ACTIVATOR]", "true");
+          return Collections.unmodifiableMap(systemProperties);
+        }
+
+        @Override
+        public Map<String, String> getProjectProperties() {
+          return context.getProjectProperties();
+        }
+
+        @Override
+        public File getProjectDirectory() {
+          return context.getProjectDirectory();
+        }
+
+        @Override
+        public List<String> getInactiveProfileIds() {
+          return context.getInactiveProfileIds();
+        }
+
+        @Override
+        public List<String> getActiveProfileIds() {
+          return context.getActiveProfileIds();
+        }
+      };
+
+      /* Check if the context has changed */
+
+      ProfileActivationContext lastContext = lastProfileActiveContext.get();
+      if (context != lastContext) {
+        boolean valid = true;
+
+        if (selectorDebug == true)
+          logger.info("[DIAMONDQ Profile Activator] Context has changed. Checking all dependencies...");
+
+        /* We need to check all the dependencies */
+
+        for (Dependency dependency : dependencies)
+          if (dependency.isValid(updatedContext, null) == false) {
+            valid = false;
+            break;
+          }
+
+        if (valid == false) {
+          cachedActiveProfiles.clear();
+          cachedInactiveProfiles.clear();
+          dependencies.clear();
+          if (selectorDebug == true)
+            logger.info(
+              "[DIAMONDQ Profile Activator] A dependency is no longer valid. All cached profiles have been cleared");
+        }
+        else {
+          if (selectorDebug == true)
+            logger.info("[DIAMONDQ Profile Activator] All dependencies are still valid.");
+        }
+        lastProfileActiveContext = new WeakReference<ProfileActivationContext>(context);
       }
 
-      @Override
-      public Map<String, String> getSystemProperties() {
-        Map<String, String> systemProperties = new HashMap<>(context.getSystemProperties());
-        systemProperties.put("[DIAMONDQ-PROFILE-ACTIVATOR]", "true");
-        return Collections.unmodifiableMap(systemProperties);
+      /* Log the context profile ids */
+
+      if (selectorDebug == true) {
+        logger.info("[DIAMONDQ Profile Activator] Profiles: " + Arrays.toString(profiles.toArray()));
+        logger.info("[DIAMONDQ Profile Activator] Context: " + System.identityHashCode(context));
+        logger.info("[DIAMONDQ Profile Activator] Context Dir: " + context.getProjectDirectory().toString());
+        logger.info("[DIAMONDQ Profile Activator] Context: Active Profile Ids: "
+          + Arrays.toString(updatedContext.getActiveProfileIds().toArray()));
+        logger.info("[DIAMONDQ Profile Activator] Context: Inactive Profile Ids: "
+          + Arrays.toString(updatedContext.getInactiveProfileIds().toArray()));
       }
 
-      @Override
-      public Map<String, String> getProjectProperties() {
-        return context.getProjectProperties();
-      }
+      List<Profile> activeProfileList = new ArrayList<>();
+      for (Profile profile : profiles) {
+        if (selectorDebug == true)
+          logger.info("[DIAMONDQ Profile Activator] Checking if profile " + profile.getId() + " is active?");
 
-      @Override
-      public File getProjectDirectory() {
-        return context.getProjectDirectory();
-      }
+        /* Check if this profile should be activated */
 
-      @Override
-      public List<String> getInactiveProfileIds() {
-        return context.getInactiveProfileIds();
+        if (hasActive(selectorDebug, profile, updatedContext, problems)) {
+          if (selectorDebug == true)
+            logger.info("[DIAMONDQ Profile Activator] Activating profile " + profile.getId());
+          activeProfileList.add(profile);
+        }
       }
-
-      @Override
-      public List<String> getActiveProfileIds() {
-        return context.getActiveProfileIds();
-      }
-    };
-
-    List<Profile> activeProfileList = new ArrayList<>();
-    for (Profile profile : profiles) {
-      if (hasActive(profile, updatedContext, problems)) {
-        activeProfileList.add(profile);
-      }
+      activeProfileList.addAll(super.getActiveProfiles(profiles, updatedContext, problems));
+      if ((logger.isDebugEnabled() == true) && (activeProfileList.isEmpty() == false))
+        logger
+          .debug("[DIAMONDQ Profile Activator] Activated profiles: " + Arrays.toString(activeProfileList.toArray()));
+      return activeProfileList;
     }
-    activeProfileList.addAll(super.getActiveProfiles(profiles, updatedContext, problems));
-    if ((logger.isDebugEnabled() == true) && (activeProfileList.isEmpty() == false))
-      logger.info("[DIAMONDQ Profile Activator] SELECT: " + Arrays.toString(activeProfileList.toArray()) + " from "
-        + Arrays.toString(profiles.toArray()));
-    return activeProfileList;
   }
 
-  protected boolean hasActive(Profile profile, ProfileActivationContext context, ModelProblemCollector problems) {
+  protected boolean hasActive(boolean pSelectorDebug, Profile profile, ProfileActivationContext context,
+    ModelProblemCollector problems) {
+
+    /* Start by checking the cache */
+
+    String profileId = profile.getId();
+    if (cachedActiveProfiles.contains(profileId) == true) {
+      if (pSelectorDebug == true)
+        logger.debug("[DIAMONDQ Profile Activator] Cached active profile found");
+      return true;
+    }
+    if (cachedInactiveProfiles.contains(profileId) == true) {
+      if (pSelectorDebug == true)
+        logger.debug("[DIAMONDQ Profile Activator] Cached inactive profile found");
+      return false;
+    }
+
+    /* Check if this is one of the profiles that we can verify? */
+
+    boolean result = false;
     for (ProfileActivator activator : activatorList) {
       if (activator instanceof PropertyProfileActivator) {
         if (activator.presentInConfig(profile, context, problems)) {
@@ -131,18 +245,29 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
 
           String script = property.getValue();
 
-          logger.debug("[DIAMONDQ Profile Activator] Resolving " + script);
+          if (pSelectorDebug == true)
+            logger.debug("[DIAMONDQ Profile Activator] Resolving " + script);
 
-          return recursiveProcess(profile, context, problems, property.getLocation(""), script);
+          /* Recursively check */
+
+          result = recursiveProcess(pSelectorDebug, profile, context, problems, property.getLocation(""), script);
         }
       }
     }
-    return false;
+
+    /* Cache the result */
+
+    if (result == true)
+      cachedActiveProfiles.add(profileId);
+    else
+      cachedInactiveProfiles.add(profileId);
+    return result;
   }
 
-  private boolean recursiveProcess(Profile pProfile, ProfileActivationContext pContext, ModelProblemCollector pProblems,
-    InputLocation pPropertyLocation, String pScript) {
-    logger.debug("[DIAMONDQ Profile Activator] recursiveProcess(" + pScript + ")");
+  private boolean recursiveProcess(boolean pSelectorDebug, Profile pProfile, ProfileActivationContext pContext,
+    ModelProblemCollector pProblems, InputLocation pPropertyLocation, String pScript) {
+    if (pSelectorDebug == true)
+      logger.debug("[DIAMONDQ Profile Activator] recursiveProcess(" + pScript + ")");
 
     /* Look for the first opening bracket */
 
@@ -169,7 +294,8 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
     String keyword = pScript.substring(0, offset).trim();
     String args = pScript.substring(offset + 1, endOffset).trim();
 
-    logger.debug("[DIAMONDQ Profile Activator] Keyword: |" + keyword + "| -> |" + args + "|");
+    if (pSelectorDebug == true)
+      logger.debug("[DIAMONDQ Profile Activator] Keyword: |" + keyword + "| -> |" + args + "|");
 
     /* Handle the keyword */
 
@@ -177,29 +303,43 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
 
       /* Split the arg into a set of paths */
 
-      List<String> split = splitArgs(args);
+      List<String> split = splitArgs(pSelectorDebug, args);
       for (String arg : split) {
-        if (recursiveProcess(pProfile, pContext, pProblems, pPropertyLocation, arg) == true) {
-          logger.debug("[DIAMONDQ Profile Activator] OR child returned true, so OR is true");
+        if (recursiveProcess(pSelectorDebug, pProfile, pContext, pProblems, pPropertyLocation, arg) == true) {
+          if (pSelectorDebug == true)
+            logger.debug("[DIAMONDQ Profile Activator] OR child returned true, so OR is true");
           return true;
         }
       }
-      logger.debug("[DIAMONDQ Profile Activator] no OR child returned true, so OR is false");
+      if (pSelectorDebug == true)
+        logger.debug("[DIAMONDQ Profile Activator] no OR child returned true, so OR is false");
       return false;
     }
     else if ("and".equalsIgnoreCase(keyword)) {
 
       /* Split the arg into a set of paths */
 
-      List<String> split = splitArgs(args);
+      List<String> split = splitArgs(pSelectorDebug, args);
 
       for (String arg : split) {
-        if (recursiveProcess(pProfile, pContext, pProblems, pPropertyLocation, arg) == false) {
-          logger.debug("[DIAMONDQ Profile Activator] AND child returned false, so AND is false");
+        if (recursiveProcess(pSelectorDebug, pProfile, pContext, pProblems, pPropertyLocation, arg) == false) {
+          if (pSelectorDebug == true)
+            logger.debug("[DIAMONDQ Profile Activator] AND child returned false, so AND is false");
           return false;
         }
       }
-      logger.debug("[DIAMONDQ Profile Activator] no AND child returned false, so AND is true");
+      if (pSelectorDebug == true)
+        logger.debug("[DIAMONDQ Profile Activator] no AND child returned false, so AND is true");
+      return true;
+    }
+    else if ("not".equalsIgnoreCase(keyword)) {
+      if (recursiveProcess(pSelectorDebug, pProfile, pContext, pProblems, pPropertyLocation, args) == true) {
+        if (pSelectorDebug == true)
+          logger.debug("[DIAMONDQ Profile Activator] NOT child returned true, so NOT is false");
+        return false;
+      }
+      if (pSelectorDebug == true)
+        logger.debug("[DIAMONDQ Profile Activator] NOT child returned false, so NOT is true");
       return true;
     }
     else if ("file".equalsIgnoreCase(keyword)) {
@@ -207,15 +347,20 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
       /* Resolve the file to see if it exists */
 
       String filePath = resolveDir(args, pProfile, pContext, pProblems, pPropertyLocation);
-      if (filePath == null)
+      if (filePath == null) {
+        dependencies.add(Dependency.onFail());
         return false;
+      }
       File file = new File(filePath);
+      dependencies.add(Dependency.onFile(file));
       if (file.exists() == true) {
-        logger.debug("[DIAMONDQ Profile Activator] file exists so true -> " + filePath);
+        if (pSelectorDebug == true)
+          logger.debug("[DIAMONDQ Profile Activator] file exists so true -> " + filePath);
         return true;
       }
       else {
-        logger.debug("[DIAMONDQ Profile Activator] file missing so false -> " + filePath);
+        if (pSelectorDebug == true)
+          logger.debug("[DIAMONDQ Profile Activator] file missing so false -> " + filePath);
         return false;
       }
     }
@@ -224,15 +369,20 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
       /* Resolve the file to see if it exists */
 
       String filePath = resolveDir(args, pProfile, pContext, pProblems, pPropertyLocation);
-      if (filePath == null)
+      if (filePath == null) {
+        dependencies.add(Dependency.onFail());
         return false;
+      }
       File file = new File(filePath);
+      dependencies.add(Dependency.onFile(file));
       if (file.exists() == true) {
-        logger.debug("[DIAMONDQ Profile Activator] file exists so false -> " + filePath);
+        if (pSelectorDebug == true)
+          logger.debug("[DIAMONDQ Profile Activator] file exists so false -> " + filePath);
         return false;
       }
       else {
-        logger.debug("[DIAMONDQ Profile Activator] file missing so true -> " + filePath);
+        if (pSelectorDebug == true)
+          logger.debug("[DIAMONDQ Profile Activator] file missing so true -> " + filePath);
         return true;
       }
     }
@@ -264,68 +414,47 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
 
       /* Now look for the property */
 
+      boolean userProperty = true;
       String sysValue = pContext.getUserProperties().get(propKey);
-      if (sysValue == null)
+      if (sysValue == null) {
+        userProperty = false;
         sysValue = pContext.getSystemProperties().get(propKey);
+      }
 
-      if (StringUtils.isNotEmpty(sysValue)) {
-        if (propValue == null) {
-          if (reverse == true) {
-            logger.debug("[DIAMONDQ Profile Activator] property \"" + propKey + "\" exists so false");
-            return false;
-          }
-          logger.debug("[DIAMONDQ Profile Activator] property \"" + propKey + "\" exists so true");
-          return true;
-        }
-        else {
-          if (propValue.equals(sysValue)) {
-            if (reverse == true) {
-              logger.debug("[DIAMONDQ Profile Activator] property \"" + propKey + "\" -> \"" + sysValue
-                + "\" equals to \"" + propValue + "\" so false");
-              return false;
-            }
-            logger.debug("[DIAMONDQ Profile Activator] property \"" + propKey + "\" -> \"" + sysValue
-              + "\" equals to \"" + propValue + "\" so true");
-            return true;
-          }
-          else {
-            if (reverse == true) {
-              logger.debug("[DIAMONDQ Profile Activator] property \"" + propKey + "\" -> \"" + sysValue
-                + "\" not equals to \"" + propValue + "\" so true");
-              return true;
-            }
-            logger.debug("[DIAMONDQ Profile Activator] property \"" + propKey + "\" -> \"" + sysValue
-              + "\" not equals to \"" + propValue + "\" so false");
-            return false;
-          }
-        }
-      }
-      else {
-        if (reverse == true) {
-          logger.debug("[DIAMONDQ Profile Activator] property \"" + propKey + "\" does not exist so true");
-          return true;
-        }
-        logger.debug("[DIAMONDQ Profile Activator] property \"" + propKey + "\" does not exist so false");
-        return false;
-      }
+      Dependency dep = Dependency.onProperty(userProperty, propKey, propValue, reverse);
+      return dep.isValid(pContext, pSelectorDebug == true ? logger : null);
     }
     else if ("type".equalsIgnoreCase(keyword)) {
 
       /* Check to see if there is a file with the prefix "type-{args}" present */
 
       String filePath = resolveDir("profiles", pProfile, pContext, pProblems, pPropertyLocation);
-      if (filePath == null)
+      if (filePath == null) {
+        dependencies.add(Dependency.onFail());
         return false;
+      }
       File profilesDir = new File(filePath);
-      if (profilesDir.exists() == true)
-        for (String testFile : profilesDir.list()) {
-          if (testFile.startsWith("type-" + args)) {
-            logger.debug("[DIAMONDQ Profile Activator] type \"" + testFile + "\" exists so true");
+      String prefix = "type-" + args;
+      if (profilesDir.exists() == true) {
+        for (File testFile : profilesDir.listFiles()) {
+          if (testFile.getName().startsWith(prefix)) {
+            if (pSelectorDebug == true)
+              logger.debug("[DIAMONDQ Profile Activator] type \"" + testFile + "\" exists so true");
+            dependencies.add(Dependency.onFile(testFile));
             return true;
           }
         }
-      logger.debug("[DIAMONDQ Profile Activator] no type \"type-" + args + "\" exists so false");
-      return false;
+        if (pSelectorDebug == true)
+          logger.debug("[DIAMONDQ Profile Activator] no type \"" + prefix + "\" exists so false");
+        dependencies.add(Dependency.onNoStartsWith(profilesDir, prefix));
+        return false;
+      }
+      else {
+        if (pSelectorDebug == true)
+          logger.debug("[DIAMONDQ Profile Activator] profiles dir \"" + filePath + "\" doesn't exists so false");
+        dependencies.add(Dependency.onFile(profilesDir));
+        return false;
+      }
     }
     else if ("jdk".equalsIgnoreCase(keyword)) {
 
@@ -333,63 +462,90 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
 
       int javaVer = -1;
       String filePath = resolveDir("profiles", pProfile, pContext, pProblems, pPropertyLocation);
-      if (filePath == null)
+      if (filePath == null) {
+        dependencies.add(Dependency.onFail());
         return false;
+      }
       File profilesDir = new File(filePath);
       if (profilesDir.exists() == true) {
-        for (String testFile : profilesDir.list()) {
-          if (testFile.startsWith("type-java-"))
-            javaVer = Integer.parseInt(testFile.substring(10));
+        File matchFile = null;
+        for (File testFile : profilesDir.listFiles()) {
+          if (testFile.getName().startsWith("type-java-")) {
+            matchFile = testFile;
+            javaVer = Integer.parseInt(testFile.getName().substring(10));
+          }
         }
         if (javaVer == -1) {
-          logger.debug("[DIAMONDQ Profile Activator] No profiles/type-java-XXX present when requesting a jdk so false");
+          if (pSelectorDebug == true)
+            logger
+              .debug("[DIAMONDQ Profile Activator] No profiles/type-java-XXX present when requesting a jdk so false");
+          dependencies.add(Dependency.onNoStartsWith(profilesDir, "type-java-"));
           return false;
         }
+        dependencies.add(Dependency.onFile(matchFile));
         if (args.startsWith("<=") || args.startsWith("=<")) {
           int testVer = Integer.parseInt(args.substring(2).trim());
           if (javaVer <= testVer) {
-            logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " <= " + testVer + " so true");
+            if (pSelectorDebug == true)
+              logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " <= " + testVer + " so true");
             return true;
           }
         }
         else if (args.startsWith("<")) {
           int testVer = Integer.parseInt(args.substring(1).trim());
           if (javaVer < testVer) {
-            logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " < " + testVer + " so true");
+            if (pSelectorDebug == true)
+              logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " < " + testVer + " so true");
+            dependencies.add(Dependency.onFile(matchFile));
             return true;
           }
         }
         else if (args.startsWith(">=") || args.startsWith("=>")) {
           int testVer = Integer.parseInt(args.substring(2).trim());
           if (javaVer >= testVer) {
-            logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " >= " + testVer + " so true");
+            if (pSelectorDebug == true)
+              logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " >= " + testVer + " so true");
+            dependencies.add(Dependency.onFile(matchFile));
             return true;
           }
         }
         else if (args.startsWith(">")) {
           int testVer = Integer.parseInt(args.substring(1).trim());
           if (javaVer > testVer) {
-            logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " > " + testVer + " so true");
+            if (pSelectorDebug == true)
+              logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " > " + testVer + " so true");
+            dependencies.add(Dependency.onFile(matchFile));
             return true;
           }
         }
         else if (args.startsWith("=")) {
           int testVer = Integer.parseInt(args.substring(1).trim());
           if (javaVer == testVer) {
-            logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " == " + testVer + " so true");
+            if (pSelectorDebug == true)
+              logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " == " + testVer + " so true");
+            dependencies.add(Dependency.onFile(matchFile));
             return true;
           }
         }
         else {
           int testVer = Integer.parseInt(args.trim());
           if (javaVer == testVer) {
-            logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " == " + testVer + " so true");
+            if (pSelectorDebug == true)
+              logger.debug("[DIAMONDQ Profile Activator] jdk " + javaVer + " == " + testVer + " so true");
+            dependencies.add(Dependency.onFile(matchFile));
             return true;
           }
         }
+        if (pSelectorDebug == true)
+          logger.debug("[DIAMONDQ Profile Activator] jdk is false");
+        return false;
       }
-      logger.debug("[DIAMONDQ Profile Activator] jdk is false");
-      return false;
+      else {
+        if (pSelectorDebug == true)
+          logger.debug("[DIAMONDQ Profile Activator] profiles dir \"" + filePath + "\" doesn't exists so false");
+        dependencies.add(Dependency.onFile(profilesDir));
+        return false;
+      }
     }
     else {
       pProblems.add(new ModelProblemCollectorRequest(Severity.ERROR, Version.BASE)
@@ -404,6 +560,7 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
     RegexBasedInterpolator interpolator = new RegexBasedInterpolator();
 
     final File basedir = pContext.getProjectDirectory();
+    boolean containsBaseDir = pPath.contains("${basedir}");
 
     if (basedir != null) {
       interpolator.addValueSource(new AbstractValueSource(false) {
@@ -420,8 +577,10 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
         }
       });
     }
-    else if (pPath.contains("${basedir}")) {
-      return null;
+    else {
+      if (containsBaseDir) {
+        return null;
+      }
     }
 
     interpolator.addValueSource(new MapBasedValueSource(pContext.getProjectProperties()));
@@ -441,12 +600,14 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
       return null;
     }
 
+    if ((Paths.get(pPath).isAbsolute() == false) || (containsBaseDir == true))
+      dependencies.add(Dependency.onProjectDir(basedir));
     pPath = pathTranslator.alignToBaseDirectory(pPath, basedir);
 
     return pPath;
   }
 
-  private List<String> splitArgs(String pArgs) {
+  private List<String> splitArgs(boolean pSelectorDebug, String pArgs) {
     List<String> result = new ArrayList<>();
     char[] charArray = pArgs.toCharArray();
     int size = charArray.length;
@@ -465,7 +626,8 @@ public class DiamondQProfileSelector extends DefaultProfileSelector {
     }
     if (depth == 0)
       result.add(new String(charArray, start, size - start).trim());
-    logger.debug("[DIAMONDQ Profile Activator] splitArgs(" + pArgs + ") -> " + result);
+    if (pSelectorDebug == true)
+      logger.debug("[DIAMONDQ Profile Activator] splitArgs(" + pArgs + ") -> " + result);
     return result;
   }
 }
