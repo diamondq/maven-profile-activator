@@ -1,11 +1,9 @@
 package com.diamondq.maven.activator;
 
-import com.google.common.base.Objects;
 import org.apache.maven.model.profile.ProfileActivationContext;
-import org.codehaus.plexus.logging.Logger;
-import org.codehaus.plexus.util.StringUtils;
 
 import java.io.File;
+import java.util.Objects;
 
 public abstract class Dependency {
 
@@ -14,7 +12,7 @@ public abstract class Dependency {
         return new Dependency() {
 
             @Override
-            public boolean isValid(ProfileActivationContext pContext, Logger logger) {
+            public boolean isValid(ProfileActivationContext pContext, ActivatorLogger logger) {
                 return pFile.exists() == originalExists;
             }
         };
@@ -24,7 +22,7 @@ public abstract class Dependency {
         return new Dependency() {
 
             @Override
-            public boolean isValid(ProfileActivationContext pContext, Logger logger) {
+            public boolean isValid(ProfileActivationContext pContext, ActivatorLogger logger) {
                 File[] files = pProfilesDir.listFiles();
                 if (files != null)
                     for (File file : files) {
@@ -40,7 +38,7 @@ public abstract class Dependency {
         return new Dependency() {
 
             @Override
-            public boolean isValid(ProfileActivationContext pContext, Logger logger) {
+            public boolean isValid(ProfileActivationContext pContext, ActivatorLogger logger) {
                 return false;
             }
         };
@@ -50,13 +48,13 @@ public abstract class Dependency {
         return new Dependency() {
 
             @Override
-            public boolean isValid(ProfileActivationContext pContext, Logger pLogger) {
+            public boolean isValid(ProfileActivationContext pContext, ActivatorLogger pLogger) {
                 String sysValue;
                 if (pUserProperty)
                     sysValue = pContext.getUserProperties().get(pPropKey);
                 else
                     sysValue = pContext.getSystemProperties().get(pPropKey);
-                if (StringUtils.isNotEmpty(sysValue)) {
+                if (sysValue != null && !sysValue.isEmpty()) {
                     if (pPropValue == null) {
                         if (pReverse) {
                             if (pLogger != null)
@@ -110,14 +108,14 @@ public abstract class Dependency {
         return new Dependency() {
 
             @Override
-            public boolean isValid(ProfileActivationContext pContext, Logger pLogger) {
+            public boolean isValid(ProfileActivationContext pContext, ActivatorLogger pLogger) {
                 File baseDir = pContext.getProjectDirectory();
                 String testDir = baseDir == null ? null : baseDir.toString();
-                return Objects.equal(matchingDir, testDir);
+                return Objects.equals(matchingDir, testDir);
             }
         };
     }
 
-    public abstract boolean isValid(ProfileActivationContext pContext, Logger logger);
+    public abstract boolean isValid(ProfileActivationContext pContext, ActivatorLogger logger);
 
 }

@@ -8,6 +8,12 @@
         <module name="maven-profile-activator.test" />
         <module name="maven-profile-activator.main" />
       </profile>
+      <profile name="Maven default annotation processors profile" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+        <module name="maven-profile-activator" />
+      </profile>
     </annotationProcessing>
   </component>
   <component name="JavacSettings">
