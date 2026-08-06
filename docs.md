@@ -1,6 +1,6 @@
 # Maven Profile Activator — Documentation
 
-**Version:** 1.3.1
+**Version:** 1.4.0
 **Minimum Java:** 8
 **Minimum Maven:** 3.5.2
 **License:** Apache License 2.0
@@ -28,7 +28,7 @@ Place the `maven-profile-activator` JAR on Maven's extension classpath so it is 
   <extension>
     <groupId>com.diamondq.maven</groupId>
     <artifactId>maven-profile-activator</artifactId>
-    <version>1.3.1</version>
+    <version>1.4.0</version>
   </extension>
 </extensions>
 ```
@@ -87,6 +87,9 @@ Multiple arguments are comma-separated. Nested calls are fully supported, enabli
 | `property(key)` | Property name | Returns `true` if the property is set. |
 | `property(key=value)` | Property name and expected value | Returns `true` if the property equals the given value. |
 | `property(!key)` | Property name with `!` prefix | Returns `true` if the property is **not** set. |
+| `env(key)` | Environment variable name | Returns `true` if the environment variable is set. |
+| `env(key=value)` | Environment variable name and expected value | Returns `true` if the environment variable equals the given value. |
+| `env(!key)` | Environment variable name with `!` prefix | Returns `true` if the environment variable is **not** set. |
 | `type(name)` | Type identifier | Returns `true` if any file in `profiles/` starts with `type-{name}`. |
 | `jdk(version)` | A version number or comparison (`<8`, `>=11`, `<=17`) | Compares against the `type-java-XX` marker found in the `profiles/` directory. |
 | `profile(name)` | Profile identifier | Checks for a file at `profiles/{name}`. If not found, walks up parent directories checking `parentProfiles/{name}`. |

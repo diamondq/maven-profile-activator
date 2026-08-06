@@ -410,6 +410,33 @@ public class CommonProfileSelector {
 
             Dependency dep = Dependency.onProperty(userProperty, propKey, propValue, reverse);
             return dep.isValid(pContext, pSelectorDebug ? logger : null);
+        } else if ("env".equalsIgnoreCase(keyword)) {
+
+            /* See if there is a = operator */
+
+            int eqOffset = args.indexOf('=');
+            String envValue;
+            String envKey;
+            if (eqOffset == -1) {
+                envKey = args;
+                envValue = null;
+            } else {
+                envKey = args.substring(0, eqOffset).trim();
+                envValue = args.substring(eqOffset + 1).trim();
+            }
+
+            /* Check if the ! is present in the key */
+
+            boolean reverse;
+            if (envKey.startsWith("!")) {
+                reverse = true;
+                envKey = envKey.substring(1);
+            } else reverse = false;
+
+            /* Now look for the environment variable */
+
+            Dependency dep = Dependency.onEnv(envKey, envValue, reverse);
+            return dep.isValid(pContext, pSelectorDebug ? logger : null);
         } else if ("type".equalsIgnoreCase(keyword)) {
 
             /* Check to see if there is a file with the prefix "type-{args}" present */

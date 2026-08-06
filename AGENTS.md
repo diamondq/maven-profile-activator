@@ -227,3 +227,16 @@ mvn clean install -DDiamondQProfileSelectorDebug=true -X
 2. **Weak References:** `lastProfileActiveContext` uses weak reference to allow garbage collection
 3. **Skip Property:** Profiles with `skip.*=true` property automatically bypass custom activators
 4. **Path Alignment:** All file paths aligned to project base directory via `PathTranslator`
+5. **Property/Env Dependency Gap:** `property()` and `env()` conditions call `Dependency.isValid()` directly but never call `dependencies.add(...)` (unlike `file`, `missing`, `type`, `jdk`, which all register themselves). Practical effect: once a profile's result is cached, a change to a property or environment variable value alone will **not** invalidate the cache on a later context change unless the same script also contains a `file`/`type`/`jdk` condition. This appears to be an existing gap rather than an intentional design choice — don't assume it's safe to copy without checking whether it matters for your use case.
+
+---
+
+## Adding a New Activation Keyword
+
+Touching the script language means editing three places in lockstep:
+
+1. **`CommonProfileSelector.recursiveProcess()`** — add an `else if ("keyword".equalsIgnoreCase(keyword))` branch. Parse `args` (watch for the `=value` and `!` prefix conventions used by `property`/`env` if applicable), then delegate to a `Dependency` factory method.
+2. **`Dependency.java`** — add a static factory (e.g. `onXxx(...)`) returning an anonymous `Dependency` with matching debug-log phrasing (`"[DIAMONDQ Profile Activator]   <condition> ... so <true/false>"`) so `-DDiamondQProfileSelectorDebug=true` output stays consistent.
+3. **`docs.md`** — add a row to the Conditions table under "Available Keywords", and an example under "Examples" if the keyword has non-obvious semantics.
+
+Also decide explicitly whether the new condition should register itself via `dependencies.add(...)` for cache invalidation (see the Property/Env Dependency Gap above) — don't silently copy `property()`'s behavior without considering whether your keyword's value can change within a single build/daemon lifetime.

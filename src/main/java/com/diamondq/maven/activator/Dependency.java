@@ -103,6 +103,61 @@ public abstract class Dependency {
         };
     }
 
+    public static Dependency onEnv(String pEnvKey, String pEnvValue, boolean pReverse) {
+        return new Dependency() {
+
+            @Override
+            public boolean isValid(ProfileActivationContext pContext, ActivatorLogger pLogger) {
+                String envValue = System.getenv(pEnvKey);
+                if (envValue != null && !envValue.isEmpty()) {
+                    if (pEnvValue == null) {
+                        if (pReverse) {
+                            if (pLogger != null)
+                                pLogger.debug("[DIAMONDQ Profile Activator]   env \"" + pEnvKey + "\" exists so false");
+                            return false;
+                        }
+                        if (pLogger != null)
+                            pLogger.debug("[DIAMONDQ Profile Activator]   env \"" + pEnvKey + "\" exists so true");
+                        return true;
+                    } else {
+                        if (pEnvValue.equals(envValue)) {
+                            if (pReverse) {
+                                if (pLogger != null)
+                                    pLogger.debug("[DIAMONDQ Profile Activator]   env \"" + pEnvKey + "\" -> \"" + envValue
+                                            + "\" equals to \"" + pEnvValue + "\" so false");
+                                return false;
+                            }
+                            if (pLogger != null)
+                                pLogger.debug("[DIAMONDQ Profile Activator]   env \"" + pEnvKey + "\" -> \"" + envValue
+                                        + "\" equals to \"" + pEnvValue + "\" so true");
+                            return true;
+                        } else {
+                            if (pReverse) {
+                                if (pLogger != null)
+                                    pLogger.debug("[DIAMONDQ Profile Activator]   env \"" + pEnvKey + "\" -> \"" + envValue
+                                            + "\" not equals to \"" + pEnvValue + "\" so true");
+                                return true;
+                            }
+                            if (pLogger != null)
+                                pLogger.debug("[DIAMONDQ Profile Activator]   env \"" + pEnvKey + "\" -> \"" + envValue
+                                        + "\" not equals to \"" + pEnvValue + "\" so false");
+                            return false;
+                        }
+                    }
+                } else {
+                    if (pReverse) {
+                        if (pLogger != null)
+                            pLogger.debug("[DIAMONDQ Profile Activator]   env \"" + pEnvKey + "\" does not exist so true");
+                        return true;
+                    }
+                    if (pLogger != null)
+                        pLogger.debug("[DIAMONDQ Profile Activator]   env \"" + pEnvKey + "\" does not exist so false");
+                    return false;
+                }
+            }
+        };
+    }
+
     public static Dependency onProjectDir(File pBasedir) {
         String matchingDir = pBasedir == null ? null : pBasedir.toString();
         return new Dependency() {
